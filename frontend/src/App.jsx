@@ -1,10 +1,9 @@
 import { useMemo, useState } from "react";
 
-const BASE_STEPS = [
-  "Understand the role and timeline",
-  "Collect matching internships",
-  "Prioritize by fit and deadline",
-  "Generate and track application tasks"
+const PROMPTS = [
+  "Find backend software internships in NYC for summer 2027 and create my application checklist.",
+  "Build a weekly networking plan for fintech engineering leads and alumni at 10 companies.",
+  "Generate a prep plan for Stripe intern interviews including behavioral and debugging rounds."
 ];
 
 const OP_MODES = [
@@ -44,7 +43,7 @@ const OP_MODES = [
 
 export default function App() {
   const [selectedMode, setSelectedMode] = useState(OP_MODES[0]);
-  const [goal, setGoal] = useState("");
+  const [goal, setGoal] = useState(PROMPTS[0]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
@@ -88,11 +87,11 @@ export default function App() {
         <header className="rounded-3xl border border-white/70 bg-white/80 p-6 shadow-lg shadow-blue-100 backdrop-blur sm:p-8">
           <p className="font-heading text-xs uppercase tracking-[0.28em] text-tide">PersonalOP</p>
           <h1 className="mt-3 max-w-3xl font-heading text-3xl leading-tight sm:text-5xl">
-            Your career operating system, not just an application tracker
+            Turn one natural-language task into an executable plan
           </h1>
           <p className="mt-4 max-w-2xl font-body text-sm text-slate-700 sm:text-base">
-            Internships are the core workflow, but your OP can also drive networking, skills, and interview execution
-            plans from a single goal prompt.
+            This first MVP slice accepts a single prompt, classifies the task, and returns a structured plan you can
+            build on later.
           </p>
         </header>
 
@@ -134,16 +133,17 @@ export default function App() {
 
         <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
           <article className="rounded-3xl border border-slate-200 bg-white p-6 shadow-md sm:p-8">
-            <h2 className="font-heading text-2xl">Build a plan for {selectedMode.label}</h2>
+            <h2 className="font-heading text-2xl">Describe the task you want handled</h2>
             <p className="mt-2 font-body text-sm text-slate-600">
-              Describe your outcome in one sentence. Internship automation stays first, with expansion paths ready.
+              Write one sentence in plain English. The backend will turn it into a task type, focus area, and action
+              plan.
             </p>
 
             <form className="mt-5 space-y-4" onSubmit={onSubmit}>
               <label className="block">
-                <span className="mb-2 block font-body text-sm text-slate-700">Goal</span>
+                <span className="mb-2 block font-body text-sm text-slate-700">Natural-language task input</span>
                 <textarea
-                  className="h-28 w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 font-body text-sm outline-none transition focus:border-tide focus:ring-2 focus:ring-blue-200"
+                  className="h-32 w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 font-body text-sm outline-none transition focus:border-tide focus:ring-2 focus:ring-blue-200"
                   placeholder={selectedMode.example}
                   value={goal}
                   onChange={(event) => setGoal(event.target.value)}
@@ -151,17 +151,16 @@ export default function App() {
               </label>
 
               <div className="flex flex-wrap gap-2">
-                {OP_MODES.map((mode) => (
+                {PROMPTS.map((prompt) => (
                   <button
-                    key={mode.id}
+                    key={prompt}
                     type="button"
                     onClick={() => {
-                      setSelectedMode(mode);
-                      setGoal(mode.example);
+                      setGoal(prompt);
                     }}
                     className="rounded-full border border-slate-300 bg-white px-3 py-1.5 font-body text-xs text-slate-700 transition hover:border-tide hover:text-tide"
                   >
-                    Use {mode.label} example
+                    Try example
                   </button>
                 ))}
               </div>
@@ -171,7 +170,7 @@ export default function App() {
                 disabled={!canSubmit}
                 className="inline-flex items-center justify-center rounded-xl bg-coral px-5 py-3 font-heading text-sm uppercase tracking-wide text-white transition hover:brightness-95 disabled:cursor-not-allowed disabled:bg-slate-300"
               >
-                {loading ? "Generating..." : "Generate Plan"}
+                {loading ? "Analyzing..." : "Analyze Task"}
               </button>
             </form>
 
@@ -182,30 +181,42 @@ export default function App() {
             ) : null}
 
             {result ? (
-              <div className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
-                <p className="font-body text-xs uppercase tracking-wide text-moss">Task ID</p>
-                <p className="mt-1 break-all font-mono text-sm text-emerald-900">{result.task_id}</p>
+              <div className="mt-6 grid gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 sm:grid-cols-2">
+                <div>
+                  <p className="font-body text-xs uppercase tracking-wide text-moss">Task type</p>
+                  <p className="mt-1 font-heading text-base text-emerald-900">{result.intake.task_type}</p>
+                </div>
+                <div>
+                  <p className="font-body text-xs uppercase tracking-wide text-moss">Focus area</p>
+                  <p className="mt-1 font-heading text-base text-emerald-900">{result.intake.focus_area}</p>
+                </div>
+                <div className="sm:col-span-2">
+                  <p className="font-body text-xs uppercase tracking-wide text-moss">Keywords</p>
+                  <p className="mt-1 font-body text-sm text-emerald-900">
+                    {result.intake.keywords.length > 0 ? result.intake.keywords.join(", ") : "No direct match yet"}
+                  </p>
+                </div>
+                <div className="sm:col-span-2">
+                  <p className="font-body text-xs uppercase tracking-wide text-moss">Next best action</p>
+                  <p className="mt-1 font-body text-sm text-emerald-900">{result.intake.next_best_action}</p>
+                </div>
               </div>
             ) : null}
           </article>
 
           <aside className="rounded-3xl border border-slate-200 bg-white p-6 shadow-md sm:p-8">
-            <h2 className="font-heading text-2xl">Current plan output</h2>
-            <p className="mt-2 font-body text-sm text-slate-600">
-              Mode: <span className="font-semibold text-slate-800">{selectedMode.label}</span>
-            </p>
+            <h2 className="font-heading text-2xl">Parsed execution plan</h2>
+            <p className="mt-2 font-body text-sm text-slate-600">The planner converts your sentence into a simple task brief.</p>
 
             {!result ? (
-              <ol className="mt-5 space-y-3">
-                {BASE_STEPS.map((item, index) => (
-                  <li key={item} className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-body text-sm">
-                    <span className="mr-2 inline-flex h-6 w-6 items-center justify-center rounded-full bg-tide text-xs text-white">
-                      {index + 1}
-                    </span>
-                    {item}
-                  </li>
+              <div className="mt-5 space-y-3">
+                {OP_MODES.map((mode) => (
+                  <div key={mode.id} className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-body text-sm">
+                    <p className="font-semibold text-slate-800">{mode.label}</p>
+                    <p className="mt-1 text-slate-600">{mode.description}</p>
+                  </div>
                 ))}
-              </ol>
+              </div>
             ) : (
               <div className="mt-5 space-y-3">
                 <p className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-body text-sm text-slate-700">
@@ -221,6 +232,9 @@ export default function App() {
                     </li>
                   ))}
                 </ol>
+                <p className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-body text-sm text-slate-600">
+                  Task ID: <span className="break-all font-mono text-slate-800">{result.task_id}</span>
+                </p>
               </div>
             )}
           </aside>
