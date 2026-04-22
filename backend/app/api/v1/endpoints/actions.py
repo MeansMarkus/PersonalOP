@@ -4,11 +4,16 @@ from app.db.store import (
     append_log,
     decide_action,
     get_action,
+    get_consent,
     get_task,
+    grant_consent,
     list_pending_actions,
+    list_consents,
     queue_action,
+    revoke_consent,
 )
 from app.schemas.action import ActionDecision, ActionItem, ActionQueueCreate
+from app.schemas.consent import ConsentGrant, ConsentRecord, ConsentRevoke
 
 router = APIRouter()
 
@@ -88,3 +93,26 @@ def reject_action(action_id: int, payload: ActionDecision) -> ActionItem:
         detail=f"Action #{rejected.action_id} rejected by {payload.reviewed_by}",
     )
     return rejected
+
+
+@router.get("/consents", response_model=list[ConsentRecord])
+def get_consents() -> list[ConsentRecord]:
+    return list_consents()
+
+
+@router.post("/consents/grant", response_model=ConsentRecord)
+def create_consent(payload: ConsentGrant) -> ConsentRecord:
+    return grant_consent(payload.action_type, payload.granted_by, payload.expires_at)
+
+
+@router.post("/consents/{action_type}/revoke", response_model=ConsentRecord)
+def disable_consent(action_type: str, payload: ConsentRevoke) -> ConsentRecord:
+    revoked = revoke_consent(action_type)
+    if revoked is None:
+        raise HTTPException(status_code=404, detail="Consent not found")
+
+    existing = get_consent(action_type)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Consent not found")
+
+    return existing

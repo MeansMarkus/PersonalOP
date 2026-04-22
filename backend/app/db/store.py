@@ -5,6 +5,7 @@ import json
 
 from app.db.session import get_database_url
 from app.schemas.action import ActionExecutionLog, ActionItem, TimelineEvent
+from app.schemas.consent import ConsentRecord
 from app.schemas.task import ExecutionLog, TaskListItem, TaskPlanStep
 
 
@@ -99,11 +100,23 @@ def init_db() -> None:
             )
             """
         )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS consents (
+                action_type TEXT PRIMARY KEY,
+                granted_by TEXT NOT NULL,
+                granted_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
 
 
 def reset_db() -> None:
     with _connect() as connection:
         cursor = connection.cursor()
+        cursor.execute("DELETE FROM consents")
         cursor.execute("DELETE FROM action_executions")
         cursor.execute("DELETE FROM action_queue")
         cursor.execute("DELETE FROM task_logs")
@@ -478,6 +491,124 @@ def mark_action_failed_or_retry(action_id: int, error_detail: str, max_attempts:
             return None
 
     return get_action(action_id)
+
+
+def grant_consent(action_type: str, granted_by: str, expires_at: str) -> ConsentRecord:
+    now = _utc_now()
+    with _connect() as connection:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            INSERT INTO consents (action_type, granted_by, granted_at, expires_at, is_active)
+            VALUES (?, ?, ?, ?, 1)
+            ON CONFLICT(action_type)
+            DO UPDATE SET
+                granted_by = excluded.granted_by,
+                granted_at = excluded.granted_at,
+                expires_at = excluded.expires_at,
+                is_active = 1
+            """,
+            (action_type, granted_by, now, expires_at),
+        )
+    return get_consent(action_type)
+
+
+def revoke_consent(action_type: str) -> ConsentRecord | None:
+    with _connect() as connection:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            UPDATE consents
+            SET is_active = 0
+            WHERE action_type = ?
+            """,
+            (action_type,),
+        )
+        if cursor.rowcount == 0:
+            return None
+
+    return get_consent(action_type)
+
+
+def get_consent(action_type: str) -> ConsentRecord | None:
+    with _connect() as connection:
+        cursor = connection.cursor()
+        row = cursor.execute(
+            """
+            SELECT action_type, granted_by, granted_at, expires_at, is_active
+            FROM consents
+            WHERE action_type = ?
+            """,
+            (action_type,),
+        ).fetchone()
+    if row is None:
+        return None
+
+    return ConsentRecord(
+        action_type=row["action_type"],
+        granted_by=row["granted_by"],
+        granted_at=row["granted_at"],
+        expires_at=row["expires_at"],
+        is_active=bool(row["is_active"]),
+    )
+
+
+def list_consents() -> list[ConsentRecord]:
+    with _connect() as connection:
+        cursor = connection.cursor()
+        rows = cursor.execute(
+            """
+            SELECT action_type, granted_by, granted_at, expires_at, is_active
+            FROM consents
+            ORDER BY action_type ASC
+            """
+        ).fetchall()
+
+    return [
+        ConsentRecord(
+            action_type=row["action_type"],
+            granted_by=row["granted_by"],
+            granted_at=row["granted_at"],
+            expires_at=row["expires_at"],
+            is_active=bool(row["is_active"]),
+        )
+        for row in rows
+    ]
+
+
+def has_valid_consent(action_type: str) -> bool:
+    consent = get_consent(action_type)
+    if consent is None or not consent.is_active:
+        return False
+
+    try:
+        expires_at = datetime.fromisoformat(consent.expires_at)
+    except ValueError:
+        return False
+    return expires_at > datetime.now(tz=timezone.utc)
+
+
+def count_successful_actions_today_by_type(action_type: str) -> int:
+    now = datetime.now(tz=timezone.utc)
+    start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    start_of_next_day = (now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).isoformat()
+
+    with _connect() as connection:
+        cursor = connection.cursor()
+        row = cursor.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM action_executions ae
+            JOIN action_queue aq ON aq.id = ae.action_id
+            WHERE ae.status = 'succeeded'
+              AND aq.action_type = ?
+              AND ae.created_at >= ?
+              AND ae.created_at < ?
+            """,
+            (action_type, start_of_day, start_of_next_day),
+        ).fetchone()
+
+    return int(row["count"]) if row is not None else 0
 
 
 def _ensure_action_queue_columns(cursor: sqlite3.Cursor) -> None:

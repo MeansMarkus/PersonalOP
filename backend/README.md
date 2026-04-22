@@ -37,3 +37,12 @@ GET http://127.0.0.1:8000/api/v1/tasks
 POST http://127.0.0.1:8000/api/v1/tasks/plan
 GET http://127.0.0.1:8000/api/v1/tasks/{task_id}
 POST http://127.0.0.1:8000/api/v1/tasks/{task_id}/execute
+
+Action safety endpoints
+
+GET http://127.0.0.1:8000/api/v1/actions/pending
+POST http://127.0.0.1:8000/api/v1/actions/consents/grant
+GET http://127.0.0.1:8000/api/v1/actions/consents
+POST http://127.0.0.1:8000/api/v1/actions/consents/{action_type}/revoke
+
+Note: the worker now requires active consent per action type and enforces daily action caps.

@@ -5,11 +5,19 @@ from time import sleep
 from app.db.store import (
     append_log,
     claim_next_approved_action,
+    count_successful_actions_today_by_type,
+    has_valid_consent,
     log_action_execution,
     mark_action_failed_or_retry,
     mark_action_succeeded,
 )
 from app.schemas.action import ActionItem
+
+DAILY_ACTION_CAPS: dict[str, int] = {
+    "apply_internship": 10,
+    "send_connection_request": 20,
+    "follow_up_message": 30,
+}
 
 
 def _execute_action(action: ActionItem) -> tuple[bool, str]:
@@ -19,10 +27,37 @@ def _execute_action(action: ActionItem) -> tuple[bool, str]:
     return True, f"Executed {action.action_type} for {action.target}"
 
 
+def _check_preconditions(action: ActionItem) -> str | None:
+    if not has_valid_consent(action.action_type):
+        return f"Missing active consent for action type {action.action_type}"
+
+    daily_cap = DAILY_ACTION_CAPS.get(action.action_type)
+    if daily_cap is None:
+        return None
+
+    succeeded_today = count_successful_actions_today_by_type(action.action_type)
+    if succeeded_today >= daily_cap:
+        return f"Daily cap reached for {action.action_type} ({daily_cap})"
+
+    return None
+
+
 def process_next_action(max_attempts: int = 3, base_delay_seconds: int = 5) -> bool:
     action = claim_next_approved_action()
     if action is None:
         return False
+
+    precondition_error = _check_preconditions(action)
+    if precondition_error is not None:
+        mark_action_failed_or_retry(
+            action_id=action.action_id,
+            error_detail=precondition_error,
+            max_attempts=1,
+            base_delay_seconds=0,
+        )
+        log_action_execution(action.action_id, action.task_id, "failed_precondition", precondition_error)
+        append_log(action.task_id, "action_blocked", f"Action #{action.action_id} blocked: {precondition_error}")
+        return True
 
     append_log(action.task_id, "action_execution_started", f"Action #{action.action_id} entered worker")
     succeeded, detail = _execute_action(action)

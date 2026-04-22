@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+from datetime import datetime, timedelta, timezone
 
 from app.db.store import init_db, reset_db
 from app.main import app
@@ -98,3 +99,29 @@ def test_reject_action_and_not_found_paths() -> None:
 
     missing_task_timeline = client.get("/api/v1/tasks/does-not-exist/timeline")
     assert missing_task_timeline.status_code == 404
+
+
+def test_consent_endpoints_lifecycle() -> None:
+    expires_at = (datetime.now(tz=timezone.utc) + timedelta(hours=4)).isoformat()
+    grant_response = client.post(
+        "/api/v1/actions/consents/grant",
+        json={"action_type": "apply_internship", "granted_by": "mark", "expires_at": expires_at},
+    )
+    assert grant_response.status_code == 200
+    granted = grant_response.json()
+    assert granted["action_type"] == "apply_internship"
+    assert granted["is_active"]
+
+    list_response = client.get("/api/v1/actions/consents")
+    assert list_response.status_code == 200
+    consents = list_response.json()
+    assert any(item["action_type"] == "apply_internship" for item in consents)
+
+    revoke_response = client.post(
+        "/api/v1/actions/consents/apply_internship/revoke",
+        json={"revoked_by": "mark", "note": "pause automation"},
+    )
+    assert revoke_response.status_code == 200
+    revoked = revoke_response.json()
+    assert revoked["action_type"] == "apply_internship"
+    assert not revoked["is_active"]
