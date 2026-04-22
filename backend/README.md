@@ -11,3 +11,21 @@ uvicorn app.main:app --reload
 ```
 
 Open: http://127.0.0.1:8000/docs
+
+
+## IMPORTANT URLS
+API home
+http://127.0.0.1:8000/
+
+Swagger UI (best way to test endpoints interactively)
+http://127.0.0.1:8000/docs
+
+Health check
+http://127.0.0.1:8000/health
+
+Task endpoints
+
+GET http://127.0.0.1:8000/api/v1/tasks
+POST http://127.0.0.1:8000/api/v1/tasks/plan
+GET http://127.0.0.1:8000/api/v1/tasks/{task_id}
+POST http://127.0.0.1:8000/api/v1/tasks/{task_id}/execute
