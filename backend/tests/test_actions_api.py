@@ -41,7 +41,7 @@ def test_queue_action_and_list_pending() -> None:
     assert pending[0]["action_id"] == queued["action_id"]
 
 
-def test_approve_action_executes_and_updates_timeline() -> None:
+def test_approve_action_moves_to_approved_without_immediate_execution() -> None:
     task_id = _create_task()
     queued = client.post(
         "/api/v1/actions/queue",
@@ -59,14 +59,18 @@ def test_approve_action_executes_and_updates_timeline() -> None:
     )
     assert approve_response.status_code == 200
     approved = approve_response.json()
-    assert approved["status"] == "executed"
+    assert approved["status"] == "approved"
     assert approved["reviewed_by"] == "mark"
+
+    pending_response = client.get("/api/v1/actions/pending")
+    assert pending_response.status_code == 200
+    assert pending_response.json() == []
 
     timeline_response = client.get(f"/api/v1/tasks/{task_id}/timeline")
     assert timeline_response.status_code == 200
     timeline = timeline_response.json()
-    assert any(event["action"] == "action_executed" for event in timeline)
-    assert any(event["source"] == "execution" for event in timeline)
+    assert any(event["action"] == "action_approved" for event in timeline)
+    assert not any(event["source"] == "execution" for event in timeline)
 
 
 def test_reject_action_and_not_found_paths() -> None:

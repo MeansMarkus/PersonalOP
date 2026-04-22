@@ -26,6 +26,11 @@ class ActionItem(BaseModel):
     updated_at: str
     reviewed_by: str | None = None
     note: str | None = None
+    attempts: int = 0
+    last_error: str | None = None
+    locked_at: str | None = None
+    executed_at: str | None = None
+    next_retry_at: str | None = None
 
 
 class ActionExecutionLog(BaseModel):

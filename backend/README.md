@@ -12,6 +12,14 @@ uvicorn app.main:app --reload
 
 Open: http://127.0.0.1:8000/docs
 
+Run background action worker in a second terminal:
+
+```bash
+cd backend
+. .venv/Scripts/Activate.ps1
+python -m app.worker
+```
+
 
 ## IMPORTANT URLS
 API home

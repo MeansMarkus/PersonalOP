@@ -1,5 +1,6 @@
 import sqlite3
 from datetime import datetime, timezone
+from datetime import timedelta
 import json
 
 from app.db.session import get_database_url
@@ -74,10 +75,16 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL,
                 reviewed_by TEXT,
                 note TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                locked_at TEXT,
+                executed_at TEXT,
+                next_retry_at TEXT,
                 FOREIGN KEY (task_id) REFERENCES tasks(id)
             )
             """
         )
+        _ensure_action_queue_columns(cursor)
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS action_executions (
@@ -231,7 +238,8 @@ def list_pending_actions(limit: int = 100) -> list[ActionItem]:
         cursor = connection.cursor()
         rows = cursor.execute(
             """
-            SELECT id, task_id, action_type, target, payload, status, created_at, updated_at, reviewed_by, note
+                 SELECT id, task_id, action_type, target, payload, status, created_at, updated_at, reviewed_by, note,
+                     attempts, last_error, locked_at, executed_at, next_retry_at
             FROM action_queue
             WHERE status = 'queued'
             ORDER BY id ASC
@@ -248,7 +256,8 @@ def get_action(action_id: int) -> ActionItem | None:
         cursor = connection.cursor()
         row = cursor.execute(
             """
-            SELECT id, task_id, action_type, target, payload, status, created_at, updated_at, reviewed_by, note
+                 SELECT id, task_id, action_type, target, payload, status, created_at, updated_at, reviewed_by, note,
+                     attempts, last_error, locked_at, executed_at, next_retry_at
             FROM action_queue
             WHERE id = ?
             """,
@@ -260,18 +269,34 @@ def get_action(action_id: int) -> ActionItem | None:
     return _action_row_to_item(row)
 
 
-def decide_action(action_id: int, status: str, reviewed_by: str, note: str = "") -> ActionItem | None:
+def decide_action(
+    action_id: int,
+    status: str,
+    reviewed_by: str,
+    note: str = "",
+    expected_status: str | None = None,
+) -> ActionItem | None:
     now = _utc_now()
     with _connect() as connection:
         cursor = connection.cursor()
-        cursor.execute(
-            """
-            UPDATE action_queue
-            SET status = ?, reviewed_by = ?, note = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (status, reviewed_by, note, now, action_id),
-        )
+        if expected_status is None:
+            cursor.execute(
+                """
+                UPDATE action_queue
+                SET status = ?, reviewed_by = ?, note = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, reviewed_by, note, now, action_id),
+            )
+        else:
+            cursor.execute(
+                """
+                UPDATE action_queue
+                SET status = ?, reviewed_by = ?, note = ?, updated_at = ?
+                WHERE id = ? AND status = ?
+                """,
+                (status, reviewed_by, note, now, action_id, expected_status),
+            )
         if cursor.rowcount == 0:
             return None
 
@@ -351,6 +376,126 @@ def get_task_timeline(task_id: str) -> list[TimelineEvent]:
     return sorted(events, key=lambda event: event.created_at)
 
 
+def claim_next_approved_action() -> ActionItem | None:
+    now = _utc_now()
+    with _connect() as connection:
+        cursor = connection.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
+        row = cursor.execute(
+            """
+            SELECT id
+            FROM action_queue
+            WHERE status = 'approved'
+              AND (next_retry_at IS NULL OR next_retry_at <= ?)
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (now,),
+        ).fetchone()
+        if row is None:
+            connection.commit()
+            return None
+
+        cursor.execute(
+            """
+            UPDATE action_queue
+            SET status = 'executing', locked_at = ?, updated_at = ?
+            WHERE id = ? AND status = 'approved'
+            """,
+            (now, now, row["id"]),
+        )
+        if cursor.rowcount == 0:
+            connection.commit()
+            return None
+        connection.commit()
+
+    return get_action(row["id"])
+
+
+def mark_action_succeeded(action_id: int) -> ActionItem | None:
+    now = _utc_now()
+    with _connect() as connection:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            UPDATE action_queue
+            SET status = 'succeeded',
+                updated_at = ?,
+                executed_at = ?,
+                locked_at = NULL,
+                next_retry_at = NULL,
+                last_error = NULL
+            WHERE id = ?
+            """,
+            (now, now, action_id),
+        )
+        if cursor.rowcount == 0:
+            return None
+    return get_action(action_id)
+
+
+def mark_action_failed_or_retry(action_id: int, error_detail: str, max_attempts: int, base_delay_seconds: int) -> ActionItem | None:
+    action = get_action(action_id)
+    if action is None:
+        return None
+
+    next_attempts = action.attempts + 1
+    now = datetime.now(tz=timezone.utc)
+    with _connect() as connection:
+        cursor = connection.cursor()
+        if next_attempts >= max_attempts:
+            cursor.execute(
+                """
+                UPDATE action_queue
+                SET status = 'failed',
+                    attempts = ?,
+                    last_error = ?,
+                    updated_at = ?,
+                    locked_at = NULL,
+                    next_retry_at = NULL
+                WHERE id = ?
+                """,
+                (next_attempts, error_detail, now.isoformat(), action_id),
+            )
+        else:
+            delay_seconds = base_delay_seconds * (2 ** (next_attempts - 1))
+            retry_at = (now + timedelta(seconds=delay_seconds)).isoformat()
+            cursor.execute(
+                """
+                UPDATE action_queue
+                SET status = 'approved',
+                    attempts = ?,
+                    last_error = ?,
+                    updated_at = ?,
+                    locked_at = NULL,
+                    next_retry_at = ?
+                WHERE id = ?
+                """,
+                (next_attempts, error_detail, now.isoformat(), retry_at, action_id),
+            )
+
+        if cursor.rowcount == 0:
+            return None
+
+    return get_action(action_id)
+
+
+def _ensure_action_queue_columns(cursor: sqlite3.Cursor) -> None:
+    table_info = cursor.execute("PRAGMA table_info(action_queue)").fetchall()
+    existing_columns = {row[1] for row in table_info}
+    required_columns = {
+        "attempts": "ALTER TABLE action_queue ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+        "last_error": "ALTER TABLE action_queue ADD COLUMN last_error TEXT",
+        "locked_at": "ALTER TABLE action_queue ADD COLUMN locked_at TEXT",
+        "executed_at": "ALTER TABLE action_queue ADD COLUMN executed_at TEXT",
+        "next_retry_at": "ALTER TABLE action_queue ADD COLUMN next_retry_at TEXT",
+    }
+
+    for name, statement in required_columns.items():
+        if name not in existing_columns:
+            cursor.execute(statement)
+
+
 def _action_row_to_item(row: sqlite3.Row) -> ActionItem:
     return ActionItem(
         action_id=row["id"],
@@ -363,4 +508,9 @@ def _action_row_to_item(row: sqlite3.Row) -> ActionItem:
         updated_at=row["updated_at"],
         reviewed_by=row["reviewed_by"],
         note=row["note"],
+        attempts=row["attempts"],
+        last_error=row["last_error"],
+        locked_at=row["locked_at"],
+        executed_at=row["executed_at"],
+        next_retry_at=row["next_retry_at"],
     )

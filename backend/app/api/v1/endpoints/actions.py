@@ -6,7 +6,6 @@ from app.db.store import (
     get_action,
     get_task,
     list_pending_actions,
-    log_action_execution,
     queue_action,
 )
 from app.schemas.action import ActionDecision, ActionItem, ActionQueueCreate
@@ -47,7 +46,13 @@ def approve_action(action_id: int, payload: ActionDecision) -> ActionItem:
     if action.status != "queued":
         raise HTTPException(status_code=400, detail="Only queued actions can be approved")
 
-    approved = decide_action(action_id, status="approved", reviewed_by=payload.reviewed_by, note=payload.note)
+    approved = decide_action(
+        action_id,
+        status="approved",
+        reviewed_by=payload.reviewed_by,
+        note=payload.note,
+        expected_status="queued",
+    )
     if approved is None:
         raise HTTPException(status_code=500, detail="Failed to approve action")
 
@@ -56,28 +61,7 @@ def approve_action(action_id: int, payload: ActionDecision) -> ActionItem:
         action="action_approved",
         detail=f"Action #{approved.action_id} approved by {payload.reviewed_by}",
     )
-
-    executed = decide_action(
-        action_id,
-        status="executed",
-        reviewed_by=payload.reviewed_by,
-        note=payload.note,
-    )
-    if executed is None:
-        raise HTTPException(status_code=500, detail="Failed to execute action")
-
-    log_action_execution(
-        action_id=executed.action_id,
-        task_id=executed.task_id,
-        status="succeeded",
-        detail=f"Executed {executed.action_type} for {executed.target}",
-    )
-    append_log(
-        task_id=executed.task_id,
-        action="action_executed",
-        detail=f"Action #{executed.action_id} executed",
-    )
-    return executed
+    return approved
 
 
 @router.post("/{action_id}/reject", response_model=ActionItem)
@@ -88,7 +72,13 @@ def reject_action(action_id: int, payload: ActionDecision) -> ActionItem:
     if action.status != "queued":
         raise HTTPException(status_code=400, detail="Only queued actions can be rejected")
 
-    rejected = decide_action(action_id, status="rejected", reviewed_by=payload.reviewed_by, note=payload.note)
+    rejected = decide_action(
+        action_id,
+        status="rejected",
+        reviewed_by=payload.reviewed_by,
+        note=payload.note,
+        expected_status="queued",
+    )
     if rejected is None:
         raise HTTPException(status_code=500, detail="Failed to reject action")
 
