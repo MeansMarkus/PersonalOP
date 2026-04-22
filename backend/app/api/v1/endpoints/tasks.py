@@ -2,7 +2,8 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 
-from app.db.store import append_log, create_task, get_task, list_tasks, set_steps_status
+from app.db.store import append_log, create_task, get_task, get_task_timeline, list_tasks, set_steps_status
+from app.schemas.action import TimelineEvent
 from app.schemas.task import TaskCreate, TaskDetail, TaskListItem, TaskResponse
 from app.services.executor import execute_steps
 from app.services.planner import build_task_intake, plan_goal
@@ -57,3 +58,12 @@ def execute_task(task_id: str) -> TaskDetail:
 
     updated_task["intake"] = build_task_intake(updated_task["goal"])
     return TaskDetail(**updated_task)
+
+
+@router.get("/{task_id}/timeline", response_model=list[TimelineEvent])
+def get_timeline(task_id: str) -> list[TimelineEvent]:
+    task = get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    return get_task_timeline(task_id)
