@@ -46,3 +46,10 @@ GET http://127.0.0.1:8000/api/v1/actions/consents
 POST http://127.0.0.1:8000/api/v1/actions/consents/{action_type}/revoke
 
 Note: the worker now requires active consent per action type and enforces daily action caps.
+
+Execution provider behavior
+
+- The worker now executes supported actions through an email provider abstraction.
+- Supported action types: `apply_internship`, `send_connection_request`, `follow_up_message`.
+- Default mode is dry-run (`ACTION_DRY_RUN=true`) so no external email is sent.
+- To enable live sending, set `ACTION_DRY_RUN=false` and configure SMTP settings in `.env`.

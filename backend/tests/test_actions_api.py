@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.db.store import init_db, reset_db
 from app.main import app
+from app.services.action_worker import process_next_action
 
 
 client = TestClient(app)
@@ -125,3 +126,54 @@ def test_consent_endpoints_lifecycle() -> None:
     revoked = revoke_response.json()
     assert revoked["action_type"] == "apply_internship"
     assert not revoked["is_active"]
+
+
+def test_failed_actions_and_retry_endpoint() -> None:
+    task_id = _create_task()
+    queue = client.post(
+        "/api/v1/actions/queue",
+        json={
+            "task_id": task_id,
+            "action_type": "apply_internship",
+            "target": "Failing internship",
+            "payload": {"force_fail": True},
+        },
+    )
+    assert queue.status_code == 200
+    action_id = queue.json()["action_id"]
+
+    expires_at = (datetime.now(tz=timezone.utc) + timedelta(hours=4)).isoformat()
+    grant = client.post(
+        "/api/v1/actions/consents/grant",
+        json={"action_type": "apply_internship", "granted_by": "mark", "expires_at": expires_at},
+    )
+    assert grant.status_code == 200
+
+    approve = client.post(
+        f"/api/v1/actions/{action_id}/approve",
+        json={"reviewed_by": "mark", "note": "approve"},
+    )
+    assert approve.status_code == 200
+
+    processed = process_next_action(max_attempts=1, base_delay_seconds=0)
+    assert processed
+
+    failed = client.get("/api/v1/actions/failed")
+    assert failed.status_code == 200
+    failed_payload = failed.json()
+    assert any(item["action_id"] == action_id for item in failed_payload)
+
+    retry = client.post(
+        f"/api/v1/actions/{action_id}/retry",
+        json={"reviewed_by": "mark", "note": "retry after fix"},
+    )
+    assert retry.status_code == 200
+    retried = retry.json()
+    assert retried["status"] == "approved"
+    assert retried["attempts"] == 0
+
+    bad_retry = client.post(
+        f"/api/v1/actions/{action_id}/retry",
+        json={"reviewed_by": "mark", "note": "again"},
+    )
+    assert bad_retry.status_code == 400

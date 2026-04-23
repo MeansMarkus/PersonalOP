@@ -41,6 +41,46 @@ const OP_MODES = [
   }
 ];
 
+const ACTION_TYPE_OPTIONS = [
+  { value: "apply_internship", label: "Apply Internship" },
+  { value: "send_connection_request", label: "Send Connection Request" },
+  { value: "follow_up_message", label: "Follow Up Message" }
+];
+
+function statusBadgeClasses(status) {
+  const palette = {
+    queued: "bg-amber-100 text-amber-800",
+    approved: "bg-blue-100 text-blue-800",
+    executing: "bg-indigo-100 text-indigo-800",
+    succeeded: "bg-emerald-100 text-emerald-800",
+    executed: "bg-emerald-100 text-emerald-800",
+    failed: "bg-rose-100 text-rose-800",
+    rejected: "bg-slate-200 text-slate-700"
+  };
+
+  return palette[status] || "bg-slate-200 text-slate-700";
+}
+
+function timelineBadgeClasses(action) {
+  if (action.includes("blocked") || action.includes("failed")) {
+    return "bg-rose-100 text-rose-800";
+  }
+  if (action.includes("retry")) {
+    return "bg-amber-100 text-amber-800";
+  }
+  if (action.includes("executed") || action.includes("succeeded")) {
+    return "bg-emerald-100 text-emerald-800";
+  }
+  if (action.includes("approved") || action.includes("execution_started")) {
+    return "bg-blue-100 text-blue-800";
+  }
+  return "bg-slate-200 text-slate-700";
+}
+
+function defaultExpiryIso(hoursAhead = 24) {
+  return new Date(Date.now() + hoursAhead * 60 * 60 * 1000).toISOString();
+}
+
 export default function App() {
   const [selectedMode, setSelectedMode] = useState(OP_MODES[0]);
   const [goal, setGoal] = useState(PROMPTS[0]);
@@ -52,8 +92,15 @@ export default function App() {
   const [taskDetail, setTaskDetail] = useState(null);
   const [timeline, setTimeline] = useState([]);
   const [pendingActions, setPendingActions] = useState([]);
+  const [failedActions, setFailedActions] = useState([]);
+  const [consents, setConsents] = useState([]);
   const [reviewedBy, setReviewedBy] = useState("owner");
   const [queueForm, setQueueForm] = useState({ action_type: "apply_internship", target: "", note: "" });
+  const [consentForm, setConsentForm] = useState({
+    action_type: "apply_internship",
+    granted_by: "owner",
+    expires_at: defaultExpiryIso(72)
+  });
 
   const canSubmit = useMemo(() => goal.trim().length >= 5 && !loading, [goal, loading]);
 
@@ -74,6 +121,24 @@ export default function App() {
     }
     const payload = await response.json();
     setPendingActions(payload);
+  }
+
+  async function fetchFailedActions() {
+    const response = await fetch("/api/v1/actions/failed");
+    if (!response.ok) {
+      throw new Error(`Failed to fetch failed actions (${response.status})`);
+    }
+    const payload = await response.json();
+    setFailedActions(payload);
+  }
+
+  async function fetchConsents() {
+    const response = await fetch("/api/v1/actions/consents");
+    if (!response.ok) {
+      throw new Error(`Failed to fetch consents (${response.status})`);
+    }
+    const payload = await response.json();
+    setConsents(payload);
   }
 
   async function fetchTaskDetail(taskId) {
@@ -98,6 +163,8 @@ export default function App() {
   async function refreshDashboard(preferredTaskId = "") {
     const taskPayload = await fetchTasks();
     await fetchPendingActions();
+    await fetchFailedActions();
+    await fetchConsents();
 
     const nextTaskId = preferredTaskId || selectedTaskId || taskPayload[0]?.task_id || "";
     if (nextTaskId) {
@@ -193,6 +260,68 @@ export default function App() {
       await refreshDashboard(selectedTaskId);
     } catch (decisionError) {
       setError(decisionError instanceof Error ? decisionError.message : "Action decision failed");
+    }
+  }
+
+  async function onRetryAction(actionId) {
+    setError("");
+    try {
+      const response = await fetch(`/api/v1/actions/${actionId}/retry`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reviewed_by: reviewedBy.trim() || "owner", note: "Retry requested in dashboard" })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to retry action (${response.status})`);
+      }
+
+      await refreshDashboard(selectedTaskId);
+    } catch (retryError) {
+      setError(retryError instanceof Error ? retryError.message : "Retry failed");
+    }
+  }
+
+  async function onGrantConsent(event) {
+    event.preventDefault();
+    setError("");
+    try {
+      const response = await fetch("/api/v1/actions/consents/grant", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action_type: consentForm.action_type,
+          granted_by: consentForm.granted_by.trim() || "owner",
+          expires_at: consentForm.expires_at
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to grant consent (${response.status})`);
+      }
+
+      await refreshDashboard(selectedTaskId);
+    } catch (consentError) {
+      setError(consentError instanceof Error ? consentError.message : "Failed to grant consent");
+    }
+  }
+
+  async function onRevokeConsent(actionType) {
+    setError("");
+    try {
+      const response = await fetch(`/api/v1/actions/consents/${actionType}/revoke`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ revoked_by: reviewedBy.trim() || "owner", note: "Revoked in dashboard" })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to revoke consent (${response.status})`);
+      }
+
+      await refreshDashboard(selectedTaskId);
+    } catch (revokeError) {
+      setError(revokeError instanceof Error ? revokeError.message : "Failed to revoke consent");
     }
   }
 
@@ -408,9 +537,11 @@ export default function App() {
                 value={queueForm.action_type}
                 onChange={(event) => setQueueForm((current) => ({ ...current, action_type: event.target.value }))}
               >
-                <option value="apply_internship">Apply Internship</option>
-                <option value="send_connection_request">Send Connection Request</option>
-                <option value="follow_up_message">Follow Up Message</option>
+                {ACTION_TYPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
               </select>
               <input
                 className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-body text-sm"
@@ -437,6 +568,78 @@ export default function App() {
           <article className="rounded-3xl border border-slate-200 bg-white p-6 shadow-md sm:p-8">
             <h2 className="font-heading text-2xl">Approvals and timeline</h2>
 
+            <div className="mt-4 space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <p className="font-heading text-lg">Consent manager</p>
+              <form className="space-y-3" onSubmit={onGrantConsent}>
+                <select
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-body text-sm"
+                  value={consentForm.action_type}
+                  onChange={(event) => setConsentForm((current) => ({ ...current, action_type: event.target.value }))}
+                >
+                  {ACTION_TYPE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-body text-sm"
+                  value={consentForm.granted_by}
+                  onChange={(event) => setConsentForm((current) => ({ ...current, granted_by: event.target.value }))}
+                  placeholder="Granted by"
+                />
+                <input
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-body text-sm"
+                  value={consentForm.expires_at}
+                  onChange={(event) => setConsentForm((current) => ({ ...current, expires_at: event.target.value }))}
+                  placeholder="ISO expiry, ex: 2026-12-31T23:59:59+00:00"
+                />
+                <button
+                  type="submit"
+                  className="rounded-lg bg-tide px-4 py-2 font-body text-sm font-semibold text-white"
+                >
+                  Grant or renew consent
+                </button>
+              </form>
+
+              <div className="space-y-2">
+                {consents.length === 0 ? (
+                  <p className="rounded-lg border border-slate-200 bg-white px-3 py-2 font-body text-sm text-slate-600">
+                    No consent records yet.
+                  </p>
+                ) : (
+                  consents.map((consent) => (
+                    <div
+                      key={consent.action_type}
+                      className="rounded-lg border border-slate-200 bg-white px-3 py-2"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="font-body text-sm font-semibold text-slate-800">{consent.action_type}</p>
+                        <span
+                          className={`rounded-full px-2 py-1 font-body text-[11px] uppercase tracking-wide ${
+                            consent.is_active ? "bg-emerald-100 text-emerald-800" : "bg-slate-200 text-slate-700"
+                          }`}
+                        >
+                          {consent.is_active ? "active" : "inactive"}
+                        </span>
+                      </div>
+                      <p className="mt-1 font-body text-xs text-slate-600">Expires: {consent.expires_at}</p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onRevokeConsent(consent.action_type);
+                        }}
+                        className="mt-2 rounded-lg border border-slate-300 px-2.5 py-1 font-body text-xs text-slate-700"
+                        disabled={!consent.is_active}
+                      >
+                        Revoke
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
             <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
               <label className="font-body text-xs uppercase tracking-wide text-slate-600">Reviewer</label>
               <input
@@ -456,11 +659,23 @@ export default function App() {
               ) : (
                 pendingActions.map((action) => (
                   <div key={action.action_id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                    <p className="font-heading text-sm text-slate-900">
-                      #{action.action_id} {action.action_type}
-                    </p>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-heading text-sm text-slate-900">
+                        #{action.action_id} {action.action_type}
+                      </p>
+                      <span
+                        className={`rounded-full px-2 py-1 font-body text-[11px] uppercase tracking-wide ${statusBadgeClasses(action.status)}`}
+                      >
+                        {action.status}
+                      </span>
+                    </div>
                     <p className="mt-1 font-body text-xs text-slate-600">Task: {action.task_id}</p>
                     <p className="mt-1 font-body text-sm text-slate-700">Target: {action.target}</p>
+                    {action.last_error ? (
+                      <p className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 font-body text-xs text-rose-700">
+                        Error: {action.last_error}
+                      </p>
+                    ) : null}
                     <div className="mt-3 flex gap-2">
                       <button
                         type="button"
@@ -487,6 +702,46 @@ export default function App() {
             </div>
 
             <div className="mt-6 space-y-3">
+              <p className="font-heading text-lg">Failed actions</p>
+              {failedActions.length === 0 ? (
+                <p className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-body text-sm text-slate-600">
+                  No failed actions.
+                </p>
+              ) : (
+                failedActions.map((action) => (
+                  <div key={action.action_id} className="rounded-xl border border-rose-200 bg-rose-50 p-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-heading text-sm text-slate-900">
+                        #{action.action_id} {action.action_type}
+                      </p>
+                      <span
+                        className={`rounded-full px-2 py-1 font-body text-[11px] uppercase tracking-wide ${statusBadgeClasses(action.status)}`}
+                      >
+                        {action.status}
+                      </span>
+                    </div>
+                    <p className="mt-1 font-body text-xs text-slate-600">Target: {action.target}</p>
+                    <p className="mt-1 font-body text-xs text-slate-600">Attempts: {action.attempts}</p>
+                    {action.last_error ? (
+                      <p className="mt-2 rounded-lg border border-rose-200 bg-white px-2 py-1 font-body text-xs text-rose-700">
+                        Error: {action.last_error}
+                      </p>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onRetryAction(action.action_id);
+                      }}
+                      className="mt-3 rounded-lg bg-tide px-3 py-1.5 font-body text-xs font-semibold text-white"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="mt-6 space-y-3">
               <p className="font-heading text-lg">Selected task timeline</p>
               {!selectedTaskId ? (
                 <p className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-body text-sm text-slate-600">
@@ -499,10 +754,16 @@ export default function App() {
               ) : (
                 timeline.map((event, index) => (
                   <div key={`${event.created_at}-${index}`} className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-                    <p className="font-body text-xs uppercase tracking-wide text-slate-500">
-                      {event.source} · {event.created_at}
-                    </p>
-                    <p className="mt-1 font-heading text-sm text-slate-900">{event.action}</p>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-body text-xs uppercase tracking-wide text-slate-500">
+                        {event.source} · {event.created_at}
+                      </p>
+                      <span
+                        className={`rounded-full px-2 py-1 font-body text-[11px] uppercase tracking-wide ${timelineBadgeClasses(event.action)}`}
+                      >
+                        {event.action}
+                      </span>
+                    </div>
                     <p className="mt-1 font-body text-sm text-slate-700">{event.detail}</p>
                   </div>
                 ))

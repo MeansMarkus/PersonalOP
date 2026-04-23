@@ -7,9 +7,11 @@ from app.db.store import (
     get_consent,
     get_task,
     grant_consent,
+    list_failed_actions,
     list_pending_actions,
     list_consents,
     queue_action,
+    retry_failed_action,
     revoke_consent,
 )
 from app.schemas.action import ActionDecision, ActionItem, ActionQueueCreate
@@ -41,6 +43,11 @@ def create_action(payload: ActionQueueCreate) -> ActionItem:
 @router.get("/pending", response_model=list[ActionItem])
 def get_pending_actions() -> list[ActionItem]:
     return list_pending_actions()
+
+
+@router.get("/failed", response_model=list[ActionItem])
+def get_failed_actions() -> list[ActionItem]:
+    return list_failed_actions()
 
 
 @router.post("/{action_id}/approve", response_model=ActionItem)
@@ -93,6 +100,26 @@ def reject_action(action_id: int, payload: ActionDecision) -> ActionItem:
         detail=f"Action #{rejected.action_id} rejected by {payload.reviewed_by}",
     )
     return rejected
+
+
+@router.post("/{action_id}/retry", response_model=ActionItem)
+def retry_action(action_id: int, payload: ActionDecision) -> ActionItem:
+    action = get_action(action_id)
+    if action is None:
+        raise HTTPException(status_code=404, detail="Action not found")
+    if action.status != "failed":
+        raise HTTPException(status_code=400, detail="Only failed actions can be retried")
+
+    retried = retry_failed_action(action_id, reviewed_by=payload.reviewed_by, note=payload.note)
+    if retried is None:
+        raise HTTPException(status_code=500, detail="Failed to retry action")
+
+    append_log(
+        task_id=retried.task_id,
+        action="action_retried",
+        detail=f"Action #{retried.action_id} retried by {payload.reviewed_by}",
+    )
+    return retried
 
 
 @router.get("/consents", response_model=list[ConsentRecord])

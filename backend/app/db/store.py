@@ -264,6 +264,24 @@ def list_pending_actions(limit: int = 100) -> list[ActionItem]:
     return [_action_row_to_item(row) for row in rows]
 
 
+def list_failed_actions(limit: int = 100) -> list[ActionItem]:
+    with _connect() as connection:
+        cursor = connection.cursor()
+        rows = cursor.execute(
+            """
+                 SELECT id, task_id, action_type, target, payload, status, created_at, updated_at, reviewed_by, note,
+                     attempts, last_error, locked_at, executed_at, next_retry_at
+            FROM action_queue
+            WHERE status = 'failed'
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    return [_action_row_to_item(row) for row in rows]
+
+
 def get_action(action_id: int) -> ActionItem | None:
     with _connect() as connection:
         cursor = connection.cursor()
@@ -487,6 +505,31 @@ def mark_action_failed_or_retry(action_id: int, error_detail: str, max_attempts:
                 (next_attempts, error_detail, now.isoformat(), retry_at, action_id),
             )
 
+        if cursor.rowcount == 0:
+            return None
+
+    return get_action(action_id)
+
+
+def retry_failed_action(action_id: int, reviewed_by: str, note: str = "") -> ActionItem | None:
+    now = _utc_now()
+    with _connect() as connection:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            UPDATE action_queue
+            SET status = 'approved',
+                reviewed_by = ?,
+                note = ?,
+                attempts = 0,
+                last_error = NULL,
+                locked_at = NULL,
+                next_retry_at = NULL,
+                updated_at = ?
+            WHERE id = ? AND status = 'failed'
+            """,
+            (reviewed_by, note, now, action_id),
+        )
         if cursor.rowcount == 0:
             return None
 

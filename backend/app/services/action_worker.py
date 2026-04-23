@@ -11,6 +11,7 @@ from app.db.store import (
     mark_action_failed_or_retry,
     mark_action_succeeded,
 )
+from app.services.action_providers import execute_action_with_provider
 from app.schemas.action import ActionItem
 
 DAILY_ACTION_CAPS: dict[str, int] = {
@@ -18,13 +19,6 @@ DAILY_ACTION_CAPS: dict[str, int] = {
     "send_connection_request": 20,
     "follow_up_message": 30,
 }
-
-
-def _execute_action(action: ActionItem) -> tuple[bool, str]:
-    # Mock executor for MVP. Real connectors can replace this per action_type.
-    if bool(action.payload.get("force_fail")):
-        return False, f"Execution failed for {action.action_type} on {action.target}"
-    return True, f"Executed {action.action_type} for {action.target}"
 
 
 def _check_preconditions(action: ActionItem) -> str | None:
@@ -60,7 +54,9 @@ def process_next_action(max_attempts: int = 3, base_delay_seconds: int = 5) -> b
         return True
 
     append_log(action.task_id, "action_execution_started", f"Action #{action.action_id} entered worker")
-    succeeded, detail = _execute_action(action)
+    provider_result = execute_action_with_provider(action)
+    succeeded = provider_result.succeeded
+    detail = provider_result.detail
 
     if succeeded:
         updated = mark_action_succeeded(action.action_id)
